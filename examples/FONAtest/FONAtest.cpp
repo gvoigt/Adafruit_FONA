@@ -49,7 +49,7 @@ uint8_t type;
 void setup() {
 
   try {
-      fonaSerial = new mraa::Uart("/dev/ttyMFD1");
+      fonaSerial = new mraa::Uart("/dev/ttyMFD2");
   } catch (std::exception& e) {
       std::cout << "Error while setting up raw UART, do you have a uart?" << std::endl;
       std::terminate();

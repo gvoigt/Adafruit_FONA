@@ -18,8 +18,9 @@
 
 #include "Adafruit_FONA.h"
 
-
-
+inline double chrono_get_duration(std::chrono::steady_clock::time_point time_before, std::chrono::steady_clock::time_point time_after) {
+  return std::chrono::duration_cast<std::chrono::microseconds>(time_after - time_before).count()/1000.0;
+}
 
 Adafruit_FONA::Adafruit_FONA(int8_t rst)
 {
@@ -1285,7 +1286,7 @@ boolean Adafruit_FONA_3G::enableGPRS(boolean onoff) {
 
     getReply("AT+NETOPEN", static_cast<uint16_t>(5000));
     if(replybuffer == ok_reply){
-      if(!expectReply("+NETOPEN: 0", 10000))
+      if(!expectReply("+NETOPEN: 0", 20000))
         return false;
     }
     else if (static_cast<std::string>(replybuffer) != "+NETOPEN: 0"){
@@ -1689,36 +1690,50 @@ boolean Adafruit_FONA_3G::HTTPS_request(std::string request, const char *filebuf
 
   int32_t request_size = (filebuffer == nullptr) ? request.size() : (request.size() + file_size);
   DEBUG_PRINT("request_size: "); DEBUG_PRINTLN(request_size);
-  DEBUG_PRINT("sizeof(filebuffer): "); DEBUG_PRINTLN(sizeof(filebuffer));
+  // DEBUG_PRINT("sizeof(filebuffer): "); DEBUG_PRINTLN(sizeof(filebuffer));
 
-  // Sennd request with payload (if existing)
-  std::chrono::steady_clock::time_point time_before_sending = std::chrono::steady_clock::now();
-  std::chrono::steady_clock::time_point time_after_sending;
-  std::chrono::steady_clock::time_point time_after_RECV;
+  // Send request with payload (if existing)
+  std::chrono::steady_clock::time_point before_sending          = std::chrono::steady_clock::now();
+  std::chrono::steady_clock::time_point before_available        = before_sending;
+  std::chrono::steady_clock::time_point before_arrow            = before_sending;
+  std::chrono::steady_clock::time_point after_arrow             = before_sending;
+  std::chrono::steady_clock::time_point after_request_ok        = before_sending;
+  std::chrono::steady_clock::time_point after_RECV_EVENT        = before_sending;
+  std::chrono::steady_clock::time_point after_response_size     = before_sending;
+  std::chrono::steady_clock::time_point after_response_start = before_sending;
+  std::chrono::steady_clock::time_point after_sending           = before_sending;
 
-  if(sendCheckReply("AT+CHTTPSSEND=", request_size, ">")){
+  readline(1);  // read whatever might be there
+  std::string commandStr = "AT+CHTTPSSEND=" + std::to_string(request_size) + "\r\n";
+  mySerial->writeStr(commandStr);
+  DEBUG_PRINT(F("\t---> ")); DEBUG_PRINTLN(commandStr);
+
+  before_available = std::chrono::steady_clock::now();
+
+  if(! available(500)){
+    return false;
+  }
+
+  before_arrow = std::chrono::steady_clock::now();
+
+
+  // there is no \r\n after > that's why we set the timeout time to 1 in readline
+  readline(1);
+
+  if(replybuffer[0] == '>'){
+    after_arrow = std::chrono::steady_clock::now();
     mySerial->writeStr(request);
     if(filebuffer != nullptr){
       mySerial->write(filebuffer, file_size);
       mySerial->writeStr("\r\r");
     }
-    time_after_sending = std::chrono::steady_clock::now();
     DEBUG_PRINT(F("\t---> ")); DEBUG_PRINTLN(request);
   }
-  else {return false;}
-
-
-  // while (available()) {
-  //   // Serial.write(read());
-  //   std::cout << static_cast<char>(read());
-  // }
-  // delay(5000);
-  // receive answer for the request
-
-  // read the answer from after request
+  else {DEBUG_PRINT(F("\t---> ")); DEBUG_PRINTLN(replybuffer); return false;}
 
   // the previous command shall return an "OK" but might issue "+CHTTPS: RECV EVENT" before or after that
   readOut(5000,false);
+  after_request_ok = std::chrono::steady_clock::now();
 
   boolean RECV_EVENT = false;
   if (replybuffer == ok_reply){
@@ -1727,20 +1742,22 @@ boolean Adafruit_FONA_3G::HTTPS_request(std::string request, const char *filebuf
   else if (static_cast<std::string>(replybuffer) == "+CHTTPS: RECV EVENT"){
     RECV_EVENT = true;
   }
-  time_after_RECV = std::chrono::steady_clock::now();
-  std::cout << "Time to send request = " << std::chrono::duration_cast<std::chrono::microseconds>(time_after_RECV - time_before_sending).count()/1000.0 << "ms." <<std::endl;
-  std::cout << "Time to wait for RECV_EVENT = " << std::chrono::duration_cast<std::chrono::microseconds>(time_after_RECV - time_after_sending).count()/1000.0 << "ms." <<std::endl;
+
 
 
 
   if(RECV_EVENT){
+    after_RECV_EVENT = std::chrono::steady_clock::now();
+
     uint16_t waitForReply = 5000;
     uint16_t answerLen = 0;
     if(sendParseReply("AT+CHTTPSRECV?", "+CHTTPSRECV: ", &answerLen, ',', 1)){
+      after_response_size = std::chrono::steady_clock::now();
       waitForReply = 1500;
       // readOut(waitForReply); // TODO: not sure why this is necessary
 
       if(answerLen && sendCheckReply("AT+CHTTPSRECV=", static_cast<int32_t>(answerLen), ok_reply, waitForReply)){
+      after_response_start = std::chrono::steady_clock::now();
         readline();
         DEBUG_PRINT(F("\t<--- ")); DEBUG_PRINTLN(replybuffer);
 
@@ -1808,6 +1825,19 @@ boolean Adafruit_FONA_3G::HTTPS_request(std::string request, const char *filebuf
     DEBUG_PRINTLN("NO +CHTTPS: RECV EVENT was received.");
     DEBUG_PRINT("replybuffer: "); DEBUG_PRINTLN(replybuffer);
   }
+  after_sending = std::chrono::steady_clock::now();
+
+  DEBUG_PRINT("Time to send AT+CHTTPSSEND = "); DEBUG_PRINT(chrono_get_duration(before_sending, before_available)); DEBUG_PRINTLN("ms.");
+  DEBUG_PRINT("Time to wait for available = "); DEBUG_PRINT(chrono_get_duration(before_available, before_arrow)); DEBUG_PRINTLN("ms.");
+  DEBUG_PRINT("Time to wait for > = "); DEBUG_PRINT(chrono_get_duration(before_arrow, after_arrow)); DEBUG_PRINTLN("ms.s");
+  DEBUG_PRINT("Time to send request = ");DEBUG_PRINT(chrono_get_duration(after_arrow, after_request_ok)); DEBUG_PRINTLN("ms.s");
+  DEBUG_PRINT("Time to wait for +CHTTPS: RECV EVENT = ");DEBUG_PRINT(chrono_get_duration(after_request_ok, after_RECV_EVENT)); DEBUG_PRINTLN("ms.s");
+  DEBUG_PRINT("Time to get response size = ");DEBUG_PRINT(chrono_get_duration(after_RECV_EVENT, after_response_size)); DEBUG_PRINTLN("ms.s");
+  DEBUG_PRINT("Time to get to response start = ");DEBUG_PRINT(chrono_get_duration(after_response_size, after_response_start)); DEBUG_PRINTLN("ms.s");
+  DEBUG_PRINT("Time to process response = ");DEBUG_PRINT(chrono_get_duration(after_response_start, after_sending)); DEBUG_PRINTLN("ms.s");
+  DEBUG_PRINT("Time in total = ");DEBUG_PRINT(chrono_get_duration(before_sending, after_sending)); DEBUG_PRINTLN("ms.s");
+
+
 
   return true;
 }
@@ -1959,9 +1989,9 @@ boolean Adafruit_FONA::expectReplies(std::string reply1, std::string reply2, uin
 
 /********* LOW LEVEL *******************************************/
 
-inline boolean Adafruit_FONA::available(void) {
+inline boolean Adafruit_FONA::available(unsigned int millis) {
   // original arduino function returned number of bytes to read (int)
-  return mySerial->dataAvailable();
+  return mySerial->dataAvailable(millis);
 }
 
 inline size_t Adafruit_FONA::write(uint8_t x) {

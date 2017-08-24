@@ -76,7 +76,7 @@ class Adafruit_FONA {
   uint8_t type();
 
   // Stream
-  boolean available(void);
+  boolean available(unsigned int millis = 0);
   size_t write(uint8_t x);
   int read(void);
   // int peek(void);
